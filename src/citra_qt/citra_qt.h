@@ -289,6 +289,9 @@ private slots:
     void OnSaveMovie();
     void OnCaptureScreenshot();
     void OnDumpVideo();
+    void OnToggleCoverage();
+    void OnStartCoverage();
+    void OnStopCoverage();
     void OnCompressFile();
     void OnDecompressFile();
 #ifdef _WIN32

@@ -2,11 +2,16 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <clocale>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <thread>
+#include <unordered_map>
+#include <vector>
+#include <QDir>
 #include <QFileDialog>
 #include <QFutureWatcher>
 #include <QIcon>
@@ -97,6 +102,7 @@
 #include "common/string_util.h"
 #include "common/zstd_compression.h"
 #include "core/core.h"
+#include "core/coverage.h"
 #include "core/dumping/backend.h"
 #include "core/file_sys/archive_extsavedata.h"
 #include "core/file_sys/archive_source_sd_savedata.h"
@@ -1107,6 +1113,7 @@ void GMainWindow::ConnectMenuEvents() {
     });
     connect_menu(ui->action_Capture_Screenshot, &GMainWindow::OnCaptureScreenshot);
     connect_menu(ui->action_Dump_Video, &GMainWindow::OnDumpVideo);
+    connect_menu(ui->action_Capture_Coverage, &GMainWindow::OnToggleCoverage);
 
     // Tools
     connect_menu(ui->action_Compress_ROM_File, &GMainWindow::OnCompressFile);
@@ -1137,6 +1144,7 @@ void GMainWindow::UpdateMenuState() {
         ui->action_Remove_Amiibo,
         ui->action_Pause,
         ui->action_Advance_Frame,
+        ui->action_Capture_Coverage,
     };
 
     for (QAction* action : running_actions) {
@@ -1516,6 +1524,10 @@ void GMainWindow::ShutdownGame() {
         HideFullscreen();
     }
 
+    if (Core::Coverage::IsCollecting()) {
+        OnStopCoverage();
+    }
+
     auto video_dumper = system.GetVideoDumper();
     if (video_dumper && video_dumper->IsDumping()) {
         game_shutdown_delayed = true;
@@ -1550,6 +1562,7 @@ void GMainWindow::ShutdownGame() {
 
     // Wait for emulation thread to complete and delete it
     emu_thread->wait();
+    Core::Coverage::ReleaseStorage();
     emu_thread = nullptr;
 
     system.EjectCartridge();
@@ -3100,6 +3113,101 @@ void GMainWindow::ShowFFmpegErrorMessage() {
         OnOpenFFmpeg();
 #endif
     }
+}
+
+static QString MakeCoverageFilePath(u64 game_title_id) {
+    std::string coverage_dir = FileUtil::GetUserPath(FileUtil::UserPath::DumpDir);
+    coverage_dir.append("coverage/");
+    if (!FileUtil::IsDirectory(coverage_dir) && !FileUtil::CreateFullPath(coverage_dir)) {
+        return {};
+    }
+
+    const QString timestamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    const QString title_id = game_title_id != 0
+                                 ? QString::fromStdString(fmt::format("{:016X}", game_title_id))
+                                 : QStringLiteral("unknown");
+
+    return QString::fromStdString(coverage_dir) +
+           QStringLiteral("%1_%2_coverage.cov").arg(title_id, timestamp);
+}
+
+static bool SaveCoverageSnapshot(const QString& output_path,
+                                 const std::unordered_map<u32, u64>& coverage) {
+    std::ofstream out(output_path.toStdString(), std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    std::vector<std::pair<u32, u64>> entries(coverage.begin(), coverage.end());
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+    for (const auto& [address, hit_count] : entries) {
+        out << fmt::format("{:08X} {}\n", address, hit_count);
+    }
+
+    return out.good();
+}
+
+void GMainWindow::OnToggleCoverage() {
+    if (ui->action_Capture_Coverage->isChecked()) {
+        OnStartCoverage();
+    } else {
+        OnStopCoverage();
+    }
+}
+
+void GMainWindow::OnStartCoverage() {
+    if (!emulation_running) {
+        ui->action_Capture_Coverage->setChecked(false);
+        ui->action_Capture_Coverage->setText(tr("Start Coverage"));
+        return;
+    }
+
+    if (Core::Coverage::IsCollecting()) {
+        return;
+    }
+
+    const bool cpu_jit_enabled = Settings::values.use_cpu_jit.GetValue();
+    Core::Coverage::SetJitInstrumentationEnabled(cpu_jit_enabled);
+    Core::Coverage::StartCollection();
+    if (cpu_jit_enabled) {
+        for (u32 core_id = 0; core_id < system.GetNumCores(); ++core_id) {
+            system.GetCore(core_id).ClearInstructionCache();
+        }
+    }
+    ui->action_Capture_Coverage->setText(tr("Stop Coverage"));
+    statusBar()->showMessage(tr("Code coverage capture started."), 3000);
+}
+
+void GMainWindow::OnStopCoverage() {
+    ui->action_Capture_Coverage->setChecked(false);
+    ui->action_Capture_Coverage->setText(tr("Start Coverage"));
+
+    if (!Core::Coverage::IsCollecting()) {
+        return;
+    }
+
+    Core::Coverage::SetJitInstrumentationEnabled(false);
+    if (emulation_running) {
+        for (u32 core_id = 0; core_id < system.GetNumCores(); ++core_id) {
+            system.GetCore(core_id).ClearInstructionCache();
+        }
+    }
+    const auto coverage = Core::Coverage::StopCollection();
+
+    const QString output_path = MakeCoverageFilePath(game_title_id);
+    if (output_path.isEmpty() || !SaveCoverageSnapshot(output_path, coverage)) {
+        LOG_ERROR(Frontend, "Failed to save coverage snapshot to '{}'", output_path.toStdString());
+        QMessageBox::critical(this, tr("Coverage Capture"),
+                              tr("Failed to save the coverage file."));
+        return;
+    }
+    LOG_INFO(Frontend, "Coverage snapshot saved to '{}'", output_path.toStdString());
+
+    statusBar()->showMessage(
+        tr("Coverage saved: %1").arg(QDir::toNativeSeparators(output_path)), 5000);
 }
 
 void GMainWindow::OnDumpVideo() {

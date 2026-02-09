@@ -32,6 +32,8 @@ add_library(citra_core STATIC
     cheats/cheats.h
     cheats/gateway_cheat.cpp
     cheats/gateway_cheat.h
+    coverage.cpp
+    coverage.h
     core.cpp
     core.h
     core_timing.cpp

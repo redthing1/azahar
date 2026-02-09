@@ -19,6 +19,7 @@
 #include "core/arm/skyeye_common/vfp/vfp.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "core/coverage.h"
 #include "core/gdbstub/gdbstub.h"
 #include "core/hle/kernel/svc.h"
 #include "core/memory.h"
@@ -1638,6 +1639,8 @@ DISPATCH: {
         cpu->Reg[15] &= 0xfffffffe;
     else
         cpu->Reg[15] &= 0xfffffffc;
+
+    Core::Coverage::RecordBlock(cpu->Reg[15]);
 
     // Find the cached instruction cream, otherwise translate it...
     auto itr = cpu->instruction_cache.find(cpu->Reg[15]);

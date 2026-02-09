@@ -13,6 +13,7 @@
 #include "core/arm/dynarmic/arm_tick_counts.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "core/coverage.h"
 #include "core/gdbstub/gdbstub.h"
 #include "core/hle/kernel/svc.h"
 #include "core/memory.h"
@@ -115,6 +116,14 @@ public:
     }
     std::uint64_t GetTicksForCode(bool is_thumb, VAddr, std::uint32_t instruction) override {
         return Core::TicksForInstruction(is_thumb, instruction);
+    }
+
+    std::uint64_t* GetCoverageCounterPointer(VAddr pc) override {
+        return Coverage::GetJitCounterPointer(static_cast<u32>(pc), parent.GetID());
+    }
+
+    const std::uint8_t* GetCoverageCollectingFlagPointer() override {
+        return Coverage::GetJitCollectingFlagPointer();
     }
 
     ARM_Dynarmic& parent;
